@@ -77,6 +77,7 @@ def create_handler(service, rules, static_dir):
             try:
                 parsed = urlparse(self.path)
                 parts = [part for part in parsed.path.split("/") if part]
+                actor = self._actor()
                 if parsed.path == "/health":
                     return self._send(200, service.health())
                 if parsed.path == "/":
@@ -85,6 +86,13 @@ def create_handler(service, rules, static_dir):
                         return self._send_html(200, handle.read())
                 if parts == ["api", "audit"]:
                     return self._send(200, {"items": service.audit_log()})
+                if parts == ["api", "reconcile"]:
+                    return self._send(200, service.reconcile())
+                if (len(parts) == 4 and parts[0] == "api"
+                        and parts[1] == "grants" and parts[3] == "access"):
+                    return self._send(200, service.grant_access(parts[2]))
+                if parts == ["api", "grants", "sweep-expirations"]:
+                    return self._send(200, service.sweep_expired_grants(actor))
                 if len(parts) == 3 and parts[:2] == ["api", "entities"]:
                     return self._send(200, service.get(parts[2]))
                 if len(parts) >= 2 and parts[0] == "api":
@@ -114,15 +122,18 @@ def create_handler(service, rules, static_dir):
                         raise ValidationError("action is required")
                     data = body.pop("data", body)
                     expected = body.pop("expected_version", None)
+                    op_no = body.pop("op_no", self.headers.get("X-Op-No"))
                     return self._send(
                         200,
-                        service.transition(actor, parts[2], action, data, expected),
+                        service.transition(actor, parts[2], action, data,
+                                           expected, op_no=op_no),
                     )
                 if len(parts) == 4 and parts[0] == "api" and parts[3] == "actions":
                     body = self._body()
                     action = body.pop("action", None)
                     if not action:
                         raise ValidationError("action is required")
+                    op_no = body.pop("op_no", self.headers.get("X-Op-No"))
                     return self._send(
                         200,
                         service.transition(
@@ -131,6 +142,7 @@ def create_handler(service, rules, static_dir):
                             action,
                             body.pop("data", body),
                             body.pop("expected_version", None),
+                            op_no=op_no,
                         ),
                     )
                 if len(parts) == 5 and parts[0] == "api" and parts[4] == "actions":
