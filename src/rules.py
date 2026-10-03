@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from .domain import (
     ConflictError,
@@ -39,18 +39,87 @@ def _validate_grant_activate(actor, entity, data, lookup):
     return {"activated_by": actor.user_id}
 
 
+def _validate_grant_re_enable(actor, entity, data, lookup):
+    expires_at = entity.get("data", {}).get("expires_at")
+    as_of = data.get("as_of") or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if expires_at and str(expires_at) < str(as_of):
+        raise ValidationError("grant has expired and cannot be re-enabled")
+    return {"re_enabled_by": actor.user_id}
+
+
 CUSTOM_CREATE = {'dataset': _validate_dataset, 'application': _validate_application}
-CUSTOM_TRANSITIONS = {('application', 'approve'): _validate_approve, ('grant', 'activate'): _validate_grant_activate}
+CUSTOM_TRANSITIONS = {('application', 'approve'): _validate_approve, ('grant', 'activate'): _validate_grant_activate, ('grant', 're_enable'): _validate_grant_re_enable}
 
 
 class RuleEngine:
     ALIASES = {'datasets': 'dataset', 'applications': 'application', 'grants': 'grant'}
     INITIAL_STATUS = {'dataset': 'registered', 'application': 'draft', 'grant': 'issued'}
-    TRANSITIONS = {'dataset': {'restrict': (('registered',), 'restricted'), 'publish': (('restricted',), 'published')}, 'application': {'submit': (('draft',), 'submitted'), 'review': (('submitted',), 'under_review'), 'approve': (('under_review',), 'approved'), 'reject': (('under_review',), 'rejected'), 'withdraw': (('submitted', 'under_review'), 'withdrawn')}, 'grant': {'activate': (('issued',), 'active'), 'revoke': (('active',), 'revoked'), 'expire': (('active',), 'expired')}}
-    CREATE_REQUIRED = {'dataset': ('name', 'access_policy'), 'application': ('dataset_id', 'applicant_id', 'purpose'), 'grant': ('application_id', 'dataset_id', 'recipient')}
-    ACTION_REQUIRED = {('dataset', 'restrict'): ('reason',), ('application', 'review'): ('committee_id',), ('application', 'approve'): ('approvals', 'terms', 'expires_at'), ('application', 'reject'): ('reason',), ('application', 'withdraw'): ('reason',), ('grant', 'activate'): ('starts_at', 'expires_at'), ('grant', 'revoke'): ('reason',), ('grant', 'expire'): ('expired_at',)}
+    TRANSITIONS = {
+        'dataset': {
+            'restrict': (('registered',), 'restricted'),
+            'publish': (('restricted',), 'published'),
+        },
+        'application': {
+            'submit': (('draft',), 'submitted'),
+            'review': (('submitted',), 'under_review'),
+            'approve': (('under_review',), 'approved'),
+            'reject': (('under_review',), 'rejected'),
+            'withdraw': (('submitted', 'under_review', 'approved'), 'withdrawn'),
+        },
+        'grant': {
+            'activate': (('issued',), 'active'),
+            'revoke': (('active',), 'revoked'),
+            'expire': (('active',), 'recycling'),
+            'recycle_complete': (('recycling',), 'recycled'),
+            're_enable': (('recycling',), 'active'),
+        },
+    }
+    CREATE_REQUIRED = {
+        'dataset': ('name', 'access_policy'),
+        'application': ('dataset_id', 'applicant_id', 'purpose'),
+        'grant': ('application_id', 'dataset_id', 'recipient'),
+    }
+    ACTION_REQUIRED = {
+        ('dataset', 'restrict'): ('reason',),
+        ('application', 'review'): ('committee_id',),
+        ('application', 'approve'): ('approvals', 'terms', 'expires_at'),
+        ('application', 'reject'): ('reason',),
+        ('application', 'withdraw'): ('reason',),
+        ('grant', 'activate'): ('starts_at', 'expires_at'),
+        ('grant', 'revoke'): ('reason',),
+        ('grant', 'expire'): ('expired_at',),
+        ('grant', 'recycle_complete'): ('reason',),
+        ('grant', 're_enable'): (),
+    }
     CREATE_ROLES = {'dataset': ('admin', 'committee'), 'application': ('admin', 'applicant'), 'grant': ('admin', 'committee')}
-    ROLE_ACTIONS = {'restrict': ('admin', 'committee'), 'publish': ('admin', 'committee'), 'submit': ('admin', 'applicant'), 'review': ('admin', 'committee'), 'approve': ('admin', 'committee'), 'reject': ('admin', 'committee'), 'withdraw': ('admin', 'applicant'), 'activate': ('admin', 'committee'), 'revoke': ('admin', 'committee'), 'expire': ('admin', 'committee')}
+    ROLE_ACTIONS = {
+        'restrict': ('admin', 'committee'),
+        'publish': ('admin', 'committee'),
+        'submit': ('admin', 'applicant'),
+        'review': ('admin', 'committee'),
+        'approve': ('admin', 'committee'),
+        'reject': ('admin', 'committee'),
+        'withdraw': ('admin', 'applicant'),
+        'activate': ('admin', 'committee'),
+        'revoke': ('admin', 'committee'),
+        'expire': ('admin', 'committee'),
+        'recycle_complete': ('admin', 'committee'),
+        're_enable': ('admin', 'committee'),
+    }
+
+    # Grant lifecycle states
+    GRANT_ACTIVE = 'active'
+    GRANT_ISSUED = 'issued'
+    GRANT_RECYCLING = 'recycling'
+    GRANT_RECYCLED = 'recycled'
+    GRANT_REVOKED = 'revoked'
+    GRANT_VOIDED = 'voided'
+    GRANT_EXPIRED = 'expired'
+
+    # Recycling reasons
+    REASON_APPLICATION = 'application'
+    REASON_DATASET = 'dataset'
+    REASON_EXPIRATION = 'expiration'
 
     def normalize_kind(self, kind):
         return self.ALIASES.get(kind, kind)

@@ -54,6 +54,20 @@ class SQLiteRepository:
                     created_at TEXT NOT NULL,
                     PRIMARY KEY(actor_id, idem_key)
                 );
+                CREATE TABLE IF NOT EXISTS operations (
+                    actor_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    from_status TEXT,
+                    to_status TEXT,
+                    detail TEXT NOT NULL,
+                    success INTEGER NOT NULL,
+                    error_type TEXT,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(actor_id, operation_id)
+                );
             """)
 
     @staticmethod
@@ -194,6 +208,48 @@ class SQLiteRepository:
                 "INSERT OR REPLACE INTO idempotency(actor_id, idem_key, entity_id, created_at) "
                 "VALUES (?, ?, ?, ?)",
                 (actor_id, idem_key, entity_id, utcnow()),
+            )
+
+    def get_operation(self, actor_id, operation_id):
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM operations WHERE actor_id = ? AND operation_id = ?",
+                (actor_id, operation_id),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "actor_id": row["actor_id"],
+            "operation_id": row["operation_id"],
+            "entity_id": row["entity_id"],
+            "action": row["action"],
+            "from_status": row["from_status"],
+            "to_status": row["to_status"],
+            "detail": json.loads(row["detail"]),
+            "success": int(row["success"]),
+            "error_type": row["error_type"],
+            "error_message": row["error_message"],
+            "created_at": row["created_at"],
+        }
+
+    def save_operation(self, actor_id, operation_id, entity_id, action, from_status, to_status, detail, success, error_type=None, error_message=None):
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO operations(actor_id, operation_id, entity_id, action, from_status, to_status, detail, success, error_type, error_message, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    actor_id,
+                    operation_id,
+                    entity_id,
+                    action,
+                    from_status,
+                    to_status,
+                    json.dumps(detail, ensure_ascii=False, sort_keys=True),
+                    1 if success else 0,
+                    error_type,
+                    error_message,
+                    utcnow(),
+                ),
             )
 
     def ping(self):
